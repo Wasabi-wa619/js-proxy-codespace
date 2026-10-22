@@ -425,9 +425,26 @@ function handleUpgrade(req, socket, head) {
 
 // ---------------------------------------------------------------- ルーティング
 
+// ページ遷移とエラーだけをターミナルに出す (画像などまで出すと流れて読めないため)
+function logRequest(req, res, started) {
+  const dest = String(req.headers['x-px-dest'] ?? req.headers['sec-fetch-dest'] ?? '');
+  const isPage = dest === 'document' || dest === 'iframe';
+  if (!isPage && res.statusCode < 400) return;
+  const target = decodeProxyPath(req.url || '');
+  const shown = target ? target.href : req.url;
+  console.log(`${res.statusCode} ${req.method} ${shown} (${Date.now() - started}ms${isPage ? '' : ', ' + (dest || 'fetch')})`);
+}
+
 function onRequest(req, res) {
   const url = req.url || '/';
   const pathname = url.split('?')[0];
+  const started = Date.now();
+  res.on('finish', () => logRequest(req, res, started));
+
+  if (pathname === '/__px/health') {
+    res.writeHead(200, { 'content-type': 'text/plain', 'cache-control': 'no-store' });
+    return res.end('ok');
+  }
 
   if (url.startsWith(PREFIX)) {
     const target = decodeProxyPath(url);

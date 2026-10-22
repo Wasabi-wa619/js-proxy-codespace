@@ -22,9 +22,16 @@ npm start          # http://localhost:8080
 | `PORT` | `8080` | 待ち受けポート |
 | `HOST` | `0.0.0.0` | 待ち受けアドレス |
 | `ALLOW_PRIVATE` | なし | `1` にすると localhost や LAN 内のアドレスへの接続を許可 (既定はブロック) |
+| `UPSTREAM_PROXY` | なし | `http://host:port` を指定すると、さらに上流の HTTP プロキシ経由で接続 (社内プロキシなど) |
 | `NODE_ENV` | なし | `production` にすると `public/` のファイルをキャッシュする |
 
 > Service Worker を使うため、`https://` か `http://localhost` で開いてください (Codespaces の転送 URL は https なので OK)。
+
+## うまく表示されないとき
+
+1. **ターミナル**: `npm start` を実行したターミナルに、開いたページごとに `200 GET https://... (123ms)` のようなログが出ます。何も出ていなければリクエストがプロキシに届いていません
+2. **ホーム画面の赤いメッセージ**: サーバーにつながらない場合はホーム画面に表示されます。VS Code のプレビューや `index.html` の直接表示ではなく、「ポート」タブの 8080 番の URL から開いてください
+3. **ブラウザの開発者ツール** (F12) の Console / Network タブのエラー
 
 ## 仕組み
 

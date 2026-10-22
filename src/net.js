@@ -1,6 +1,6 @@
 import dns from 'node:dns';
 import net from 'node:net';
-import { Agent } from 'undici';
+import { Agent, ProxyAgent } from 'undici';
 
 // ALLOW_PRIVATE=1 のときだけ localhost / LAN / クラウドのメタデータ (169.254.169.254) 等への接続を許可する。
 // 公開しているプロキシから内部ネットワークを覗かれないようにするため、既定では拒否。
@@ -66,8 +66,13 @@ export function assertHostAllowed(hostname) {
   }
 }
 
-export const agent = new Agent({
-  connect: { lookup: safeLookup, timeout: 15_000 },
-  headersTimeout: 60_000,
-  bodyTimeout: 120_000,
-});
+// UPSTREAM_PROXY=http://host:port を指定すると、さらに上流の HTTP プロキシ経由で接続する (社内プロキシ等)
+const UPSTREAM_PROXY = process.env.UPSTREAM_PROXY;
+
+export const agent = UPSTREAM_PROXY
+  ? new ProxyAgent({ uri: UPSTREAM_PROXY, headersTimeout: 60_000, bodyTimeout: 120_000 })
+  : new Agent({
+      connect: { lookup: safeLookup, timeout: 15_000 },
+      headersTimeout: 60_000,
+      bodyTimeout: 120_000,
+    });
