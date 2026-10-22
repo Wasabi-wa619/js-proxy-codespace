@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>プロキシのログ</title>
+    <style>
+      :root {
+        --bg: #f6f7f9;
+        --fg: #1d2129;
+        --muted: #69707d;
+        --card: #fff;
+        --border: #d7dbe2;
+        --warn: #a15c00;
+        --error: #d93025;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #15171c;
+          --fg: #e7e9ee;
+          --muted: #9aa1ad;
+          --card: #1f2229;
+          --border: #353a45;
+          --warn: #f0b04a;
+          --error: #ff7b72;
+        }
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font-family: system-ui, -apple-system, 'Hiragino Sans', 'Noto Sans JP', sans-serif;
+      }
+      header {
+        position: sticky;
+        top: 0;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        align-items: center;
+        padding: 10px 16px;
+        background: var(--card);
+        border-bottom: 1px solid var(--border);
+      }
+      h1 {
+        margin: 0;
+        font-size: 1.1rem;
+      }
+      #state {
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
+      button {
+        font: inherit;
+        padding: 4px 10px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--bg);
+        color: var(--fg);
+        cursor: pointer;
+      }
+      #log {
+        margin: 0;
+        padding: 12px 16px;
+        font: 12.5px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        white-space: pre-wrap;
+        word-break: break-all;
+      }
+      .debug {
+        color: var(--muted);
+      }
+      .warn {
+        color: var(--warn);
+      }
+      .error {
+        color: var(--error);
+        font-weight: 600;
+      }
+      .hide-debug .debug {
+        display: none;
+      }
+      a {
+        color: inherit;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>プロキシのログ</h1>
+      <label><input id="debug" type="checkbox" checked /> 詳細 (画像・JS などの通信) も表示</label>
+      <button id="clear" type="button">表示をクリア</button>
+      <a href="/">ホームへ</a>
+      <span id="state"></span>
+    </header>
+    <pre id="log"></pre>
+    <script>
+      'use strict';
+      const logEl = document.getElementById('log');
+      const stateEl = document.getElementById('state');
+      const debugBox = document.getElementById('debug');
+      let after = 0;
+
+      debugBox.addEventListener('change', () => logEl.classList.toggle('hide-debug', !debugBox.checked));
+      document.getElementById('clear').addEventListener('click', () => (logEl.textContent = ''));
+
+      async function poll() {
+        try {
+          const res = await fetch('/__px/logs.json?after=' + after, { cache: 'no-store' });
+          const entries = await res.json();
+          const atBottom = innerHeight + scrollY >= document.body.scrollHeight - 40;
+          for (const e of entries) {
+            const line = document.createElement('div');
+            line.className = e.level;
+            line.textContent = `[${e.time}] ${e.level.toUpperCase().padEnd(5)} ${e.msg}`;
+            logEl.appendChild(line);
+            after = e.id;
+          }
+          if (entries.length && atBottom) scrollTo(0, document.body.scrollHeight);
+          stateEl.textContent = '自動更新中';
+        } catch (e) {
+          stateEl.textContent = 'サーバーに接続できません (npm start が止まっていませんか?)';
+        }
+        setTimeout(poll, 1000);
+      }
+      poll();
+    </script>
+  </body>
+</html>

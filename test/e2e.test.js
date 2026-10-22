@@ -5,6 +5,8 @@ import { chromium } from 'playwright-core';
 import { startSites } from './fixtures.js';
 
 process.env.ALLOW_PRIVATE = '1'; // テストサイトが localhost にあるため
+process.env.LOG_LEVEL = 'quiet';
+process.env.LOG_FILE = '/dev/null';
 const { createServer } = await import('../src/server.js');
 
 let sites, proxy, P, browser;
@@ -135,5 +137,34 @@ test('ホーム画面から URL を入力して開ける', async () => {
   await page.press('#url', 'Enter');
   await page.waitForSelector('#b');
   assert.equal(page.url(), prox(sites.B + '/b.html'));
+  await ctx.close();
+});
+
+test('サイトを開いた後でもホーム画面に戻れる', async () => {
+  const { page, ctx } = await newPage();
+  await page.goto(prox(sites.A + '/page2.html'));
+  await page.waitForSelector('#p2');
+  await page.goto(P + '/');
+  await page.waitForSelector('#url');
+  assert.equal(page.url(), P + '/');
+  await ctx.close();
+});
+
+test('真っ白なページの原因 (JS エラー・読み込み失敗) がログに残る', async () => {
+  const { page, ctx } = await newPage();
+  const before = await (await fetch(P + '/__px/logs.json')).json();
+  const after = before.length ? before[before.length - 1].id : 0;
+  await page.goto(prox(sites.A + '/broken.html'));
+  const deadline = Date.now() + 8000;
+  let msgs = [];
+  while (Date.now() < deadline) {
+    msgs = (await (await fetch(`${P}/__px/logs.json?after=${after}`)).json()).map((e) => e.msg);
+    if (msgs.some((m) => m.includes('画面に何も表示されていません'))) break;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  const all = msgs.join('\n');
+  assert.match(all, /404 GET http:\/\/127\.0\.0\.1:\d+\/missing\.js/);
+  assert.match(all, /JS エラー: .*undefinedFunction/);
+  assert.match(all, /画面に何も表示されていません/);
   await ctx.close();
 });

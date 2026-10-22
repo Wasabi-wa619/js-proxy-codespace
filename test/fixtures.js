@@ -111,6 +111,8 @@ r.cookieVisible = document.cookie;
         const sjis = Buffer.from([0x82, 0xb1, 0x82, 0xf1, 0x82, 0xc9, 0x82, 0xbf, 0x82, 0xcd]);
         return res.end(Buffer.concat([Buffer.from('<!doctype html><title>sjis</title><p id="t">'), sjis, Buffer.from('</p>')]));
       }
+      case '/broken.html':
+        return html('<!doctype html><title>broken</title><body><div id="app"></div><script src="/missing.js"></script><script>undefinedFunction()</script></body>');
       case '/form.html':
         return html('<!doctype html><form method="post" action="/submit"><input name="q" value="hello"><button id="send">send</button></form>');
       case '/submit': {

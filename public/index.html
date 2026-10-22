@@ -97,6 +97,7 @@
         例: <a href="#" data-url="https://example.com">example.com</a> /
         <a href="#" data-url="https://ja.wikipedia.org">ja.wikipedia.org</a>
       </p>
+      <p class="hint"><a href="/__px/logs" target="_blank">ログを見る</a> (表示されないときはここを確認)</p>
     </main>
     <!-- 外部ファイルにすると、プロキシ以外 (VS Code のプレビュー等) で開いた時に読み込めず無反応になるのでインラインにする -->
     <script>
@@ -111,6 +112,19 @@
         status.textContent = text;
         status.classList.toggle('error', !!isError);
       }
+
+      // サーバーのログ (ターミナル / ログ画面) にも残す
+      function report(level, msg) {
+        console[level === 'info' ? 'log' : level]('[proxy]', msg);
+        fetch('/__px/log', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ level, msg: 'ホーム画面: ' + msg }),
+          keepalive: true,
+        }).catch(() => {});
+      }
+
+      window.addEventListener('error', (e) => report('error', 'JS エラー: ' + e.message));
 
       function toUrl(text) {
         const s = text.trim();
@@ -156,8 +170,9 @@
         }
         const url = toUrl(text);
         showStatus('読み込み中… ' + url);
+        report('info', `「${text}」を ${url} として開きます`);
         const sw = await Promise.race([swReady, new Promise((r) => setTimeout(() => r('timeout'), 3000))]);
-        if (sw !== 'ok') console.warn('[proxy] Service Worker:', sw);
+        report(sw === 'ok' ? 'info' : 'warn', 'Service Worker: ' + (sw === 'ok' ? '有効' : sw));
         location.href = '/p/' + url;
       }
 

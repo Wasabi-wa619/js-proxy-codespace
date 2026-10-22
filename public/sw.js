@@ -25,10 +25,6 @@ function toTarget(u) {
 
 async function contextOrigin(event) {
   const req = event.request;
-  if (req.mode === 'navigate') {
-    const ref = toTarget(req.referrer);
-    return ref ? ref.origin : null;
-  }
   if (event.clientId) {
     const client = await self.clients.get(event.clientId);
     const t = client && toTarget(client.url);
@@ -74,6 +70,13 @@ self.addEventListener('fetch', (event) => {
   if (PROXIED_RE.test(url.pathname) || url.pathname.startsWith('/__px/')) return;
 
   // ルート相対パス (/api/foo 等) -> どのサイトのページから来たか調べて振り向ける
+  if (req.mode === 'navigate') {
+    // 画面遷移はプロキシ中のページから来た時だけ振り向ける。
+    // それ以外 (アドレスバーに入力してホームへ戻る等) はブラウザに任せる
+    const ref = toTarget(req.referrer);
+    if (ref) event.respondWith(forward(event, PREFIX + ref.origin + url.pathname + url.search));
+    return;
+  }
   event.respondWith(
     contextOrigin(event).then((origin) =>
       origin ? forward(event, PREFIX + origin + url.pathname + url.search) : fetch(req),

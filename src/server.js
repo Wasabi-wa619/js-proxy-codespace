@@ -13,6 +13,7 @@ import { rewriteCss } from './css.js';
 import { rewriteJs } from './js.js';
 import { rewriteSetCookie, restoreCookieHeader, readCookie, INTERNAL_COOKIE_PREFIX } from './cookies.js';
 import { agent, assertHostAllowed, safeLookup, BlockedError } from './net.js';
+import { log, getEntries, LOG_FILE } from './log.js';
 
 const PORT = Number(process.env.PORT) || 8080;
 const HOST = process.env.HOST || '0.0.0.0';
@@ -277,7 +278,7 @@ async function handleProxy(req, res, target) {
     if (controller.signal.aborted) return;
     const cause = e.cause || e;
     if (cause instanceof BlockedError) return sendError(res, 403, cause.message, req);
-    console.error(`[proxy] ${req.method} ${target.href}: ${cause.code || ''} ${cause.message}`);
+    log.error(`接続失敗 ${req.method} ${target.href}: ${cause.code || ''} ${cause.message}`);
     return sendError(res, 502, `接続できませんでした: ${target.host} (${cause.code || cause.message})`, req);
   }
 
@@ -286,6 +287,11 @@ async function handleProxy(req, res, target) {
   const noBody = req.method === 'HEAD' || status === 204 || status === 304 || (status >= 100 && status < 200);
   const kind = noBody || status === 206 ? null : classify(headers['content-type'], dest);
   const isDocument = kind === 'html' && DOCUMENT_DESTS.has(dest);
+  const detail = `  ↳ 応答 ${status} ${headers['content-type'] || '(content-type なし)'}` +
+    (headers.location ? ` → リダイレクト先 ${headers.location}` : '') +
+    (kind ? ` [${kind} を書き換え${isDocument ? ' + client.js 挿入' : ''}]` : '');
+  if (isDocument || status >= 300) log.info(detail);
+  else log.debug(detail);
 
   if (isDocument) {
     const c = `${LAST_ORIGIN_COOKIE}=${encodeURIComponent(target.origin)}; Path=/; SameSite=Lax`;
@@ -329,10 +335,14 @@ async function handleProxy(req, res, target) {
       text = rewriteJs(text, { prologue: true });
     }
   } catch (e) {
-    console.error(`[rewrite] ${kind} ${target.href}: ${e.message}`);
+    log.error(`書き換え失敗 (${kind}) ${target.href}: ${e.stack || e.message}`);
   }
 
   const out = Buffer.from(text, 'utf8');
+  if (isDocument) {
+    log.info(`  ↳ 送信 ${out.length.toLocaleString()} バイト (元 ${buf.length.toLocaleString()} バイト)`);
+    if (buf.length === 0) log.warn('  ↳ サイトから空のページが返ってきました');
+  }
   headers['content-type'] = withUtf8(headers['content-type'] || (kind === 'js' ? 'text/javascript' : `text/${kind}`));
   headers['content-length'] = out.length;
   if (isDocument) headers['referrer-policy'] = 'same-origin';
@@ -346,8 +356,10 @@ function guessTargetOrigin(req) {
   const ref = req.headers.referer ? decodeProxyUrl(req.headers.referer) : null;
   if (ref) return ref.origin;
   // 画面遷移以外なら最後に開いたサイトとみなす
+  // ホーム画面 (/) は対象外 (戻れなくなるため)
   const dest = req.headers['sec-fetch-dest'];
-  if (dest && dest !== 'document' && dest !== 'iframe') {
+  const pathname = (req.url || '/').split('?')[0];
+  if (dest && dest !== 'document' && dest !== 'iframe' && pathname !== '/' && pathname !== '/index.html') {
     const last = readCookie(req.headers.cookie, LAST_ORIGIN_COOKIE);
     if (last) {
       try {
@@ -416,7 +428,7 @@ function handleUpgrade(req, socket, head) {
   });
   upstreamReq.on('timeout', () => upstreamReq.destroy(new Error('timeout')));
   upstreamReq.on('error', (e) => {
-    console.error(`[ws] ${target.href}: ${e.message}`);
+    log.error(`WebSocket 接続失敗 ${target.href}: ${e.message}`);
     fail(502, 'Bad Gateway');
   });
   socket.on('error', () => upstreamReq.destroy());
@@ -425,32 +437,70 @@ function handleUpgrade(req, socket, head) {
 
 // ---------------------------------------------------------------- ルーティング
 
-// ページ遷移とエラーだけをターミナルに出す (画像などまで出すと流れて読めないため)
+// ログ画面のポーリングなど、毎秒来るものはログに出さない
+const UNLOGGED = new Set(['/__px/health', '/__px/logs.json', '/__px/log']);
+
 function logRequest(req, res, started) {
-  const dest = String(req.headers['x-px-dest'] ?? req.headers['sec-fetch-dest'] ?? '');
-  const isPage = dest === 'document' || dest === 'iframe';
-  if (!isPage && res.statusCode < 400) return;
+  const dest = String(req.headers['x-px-dest'] ?? req.headers['sec-fetch-dest'] ?? '') || 'fetch';
   const target = decodeProxyPath(req.url || '');
   const shown = target ? target.href : req.url;
-  console.log(`${res.statusCode} ${req.method} ${shown} (${Date.now() - started}ms${isPage ? '' : ', ' + (dest || 'fetch')})`);
+  const ms = Date.now() - started;
+  const msg = `${res.statusCode} ${req.method} ${shown} (${dest}, ${ms}ms)`;
+  if (res.statusCode >= 500) log.error(msg);
+  else if (res.statusCode >= 400) log.warn(msg);
+  else if (dest === 'document' || dest === 'iframe') log.info(msg);
+  else log.debug(msg);
+}
+
+/** ブラウザ側 (client.js / ホーム画面) からのエラー報告を受け取る */
+function handleClientLog(req, res) {
+  let body = '';
+  req.setEncoding('utf8');
+  req.on('data', (c) => {
+    body += c;
+    if (body.length > 16_384) req.destroy();
+  });
+  req.on('end', () => {
+    try {
+      const { level, msg, page } = JSON.parse(body);
+      const text = `[ブラウザ] ${String(msg).slice(0, 2000)}${page ? `  @ ${page}` : ''}`;
+      if (level === 'error') log.error(text);
+      else if (level === 'warn') log.warn(text);
+      else log.info(text);
+    } catch {}
+    res.writeHead(204);
+    res.end();
+  });
 }
 
 function onRequest(req, res) {
   const url = req.url || '/';
   const pathname = url.split('?')[0];
   const started = Date.now();
-  res.on('finish', () => logRequest(req, res, started));
+  if (!UNLOGGED.has(pathname)) {
+    res.on('finish', () => logRequest(req, res, started));
+    res.on('close', () => {
+      if (!res.writableFinished) log.warn(`中断 ${req.method} ${decodeProxyPath(url)?.href || url} (ブラウザ側が ${Date.now() - started}ms で切断)`);
+    });
+  }
 
   if (pathname === '/__px/health') {
     res.writeHead(200, { 'content-type': 'text/plain', 'cache-control': 'no-store' });
     return res.end('ok');
   }
+  if (pathname === '/__px/log' && req.method === 'POST') return handleClientLog(req, res);
+  if (pathname === '/__px/logs.json') {
+    const after = Number(new URL(url, 'http://x').searchParams.get('after')) || 0;
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+    return res.end(JSON.stringify(getEntries(after)));
+  }
+  if (pathname === '/__px/logs') return serveStatic(req, res, 'logs.html');
 
   if (url.startsWith(PREFIX)) {
     const target = decodeProxyPath(url);
     if (!target) return sendError(res, 400, 'URL の形式が正しくありません', req);
     return handleProxy(req, res, target).catch((e) => {
-      console.error('[proxy] unexpected', e);
+      log.error(`[proxy] 予期しないエラー ${target.href}: ${e.stack || e.message}`);
       sendError(res, 500, '内部エラー: ' + e.message, req);
     });
   }
@@ -464,6 +514,7 @@ function onRequest(req, res) {
 
   const origin = guessTargetOrigin(req);
   if (origin) {
+    log.debug(`ルート相対パス ${url} を ${origin} 宛てとみなして転送`);
     res.writeHead(307, { location: PREFIX + origin + url, 'cache-control': 'no-store' });
     return res.end();
   }
@@ -482,8 +533,29 @@ export function createServer() {
   return server;
 }
 
+function publicUrl() {
+  const { CODESPACE_NAME, GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN: domain } = process.env;
+  if (CODESPACE_NAME && domain) return `https://${CODESPACE_NAME}-${PORT}.${domain}/`;
+  return `http://localhost:${PORT}/`;
+}
+
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
-  createServer().listen(PORT, HOST, () => {
-    console.log(`プロキシ起動: http://localhost:${PORT}`);
+  process.on('uncaughtException', (e) => log.error(`[process] uncaughtException: ${e.stack || e}`));
+  process.on('unhandledRejection', (e) => log.error(`[process] unhandledRejection: ${e?.stack || e}`));
+
+  const server = createServer();
+  server.on('error', (e) => {
+    if (e.code === 'EADDRINUSE') {
+      log.error(`ポート ${PORT} は既に使われています。前に起動したプロキシが動いていないか確認してください (別ポート: PORT=8081 npm start)`);
+    } else {
+      log.error(`サーバーを起動できませんでした: ${e.stack || e}`);
+    }
+    process.exit(1);
+  });
+  server.listen(PORT, HOST, () => {
+    log.info(`プロキシ起動 (Node ${process.version}, ${HOST}:${PORT})`);
+    log.info(`ブラウザで開く: ${publicUrl()}`);
+    log.info(`ログ画面:       ${publicUrl()}__px/logs   (ファイル: ${LOG_FILE})`);
+    if (process.env.UPSTREAM_PROXY) log.info(`上流プロキシ: ${process.env.UPSTREAM_PROXY}`);
   });
 }

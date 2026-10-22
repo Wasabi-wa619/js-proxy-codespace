@@ -13,6 +13,57 @@
   var WS_ORIGIN = ORIGIN.replace(/^http/, 'ws');
 
   var nativeToString = Function.prototype.toString;
+
+  // ---------------------------------------------------------------- エラー報告
+  // ページの JS エラーをサーバーへ送り、ターミナルと /__px/logs に出す。
+  // fetch はこの後フックされるので、フック前のものを掴んでおく。
+  var rawFetch = window.fetch;
+  var reportCount = 0;
+  function report(level, msg) {
+    if (reportCount++ >= 30) return; // 1ページあたりの上限 (ログが埋まらないように)
+    try {
+      rawFetch.call(window, '/__px/log', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ level: level, msg: String(msg), page: currentPage() }),
+        keepalive: true,
+      }).catch(function () {});
+    } catch (e) {}
+  }
+  function currentPage() {
+    try {
+      var m = /^\/p\/(.*)$/.exec(location.pathname);
+      return m ? m[1] + location.search : location.href;
+    } catch (e) {
+      return '';
+    }
+  }
+  window.addEventListener('error', function (e) {
+    if (e.message) {
+      report('error', 'JS エラー: ' + e.message + (e.filename ? ' (' + e.filename + ':' + e.lineno + ')' : ''));
+    } else if (e.target && e.target !== window && e.target.tagName) {
+      // <script> や <link> の読み込み失敗
+      var t = e.target;
+      report('warn', '読み込み失敗: <' + t.tagName.toLowerCase() + '> ' + (t.src || t.href || ''));
+    }
+  }, true);
+  window.addEventListener('unhandledrejection', function (e) {
+    var r = e.reason;
+    report('error', '未処理の Promise エラー: ' + (r && r.stack ? r.stack.split('\n').slice(0, 3).join(' | ') : r));
+  });
+  // 真っ白になっていないか、表示から少し経ってから確認する
+  window.addEventListener('load', function () {
+    setTimeout(function () {
+      var b = document.body;
+      var text = b ? (b.innerText || '').trim() : '';
+      var visible = b ? b.querySelectorAll('img,video,canvas,svg,iframe,input,button').length : 0;
+      if (!text && !visible) {
+        report('warn', '画面に何も表示されていません (body が空)。上の JS エラーや読み込み失敗が原因の可能性があります');
+      } else {
+        report('info', '表示完了: ' + (document.title || '(タイトルなし)') + ' / 文字数 ' + text.length);
+      }
+    }, 2000);
+  });
   var disguised = new WeakMap();
 
   // フックした関数の toString() がネイティブに見えるようにする (検出対策)
